@@ -10,7 +10,9 @@ from sklearn.metrics import f1_score
 from collections import defaultdict
 
 from graphsage.encoders import Encoder
-from graphsage.aggregators import MeanAggregator
+from graphsage.aggregators import MeanAggregator, MaxPoolAggregator
+
+import sys
 
 """
 Simple supervised GraphSAGE model as well as examples running the model
@@ -25,7 +27,7 @@ class SupervisedGraphSage(nn.Module):
         self.xent = nn.CrossEntropyLoss()
 
         self.weight = nn.Parameter(torch.FloatTensor(num_classes, enc.embed_dim))
-        init.xavier_uniform(self.weight)
+        init.xavier_uniform_(self.weight)
 
     def forward(self, nodes):
         embeds = self.enc(nodes)
@@ -62,9 +64,10 @@ def load_cora():
             adj_lists[paper2].add(paper1)
     return feat_data, labels, adj_lists
 
-def run_cora():
+def run_cora(three_layer=False):
     np.random.seed(1)
     random.seed(1)
+    torch.manual_seed(1)
     num_nodes = 2708
     feat_data, labels, adj_lists = load_cora()
     features = nn.Embedding(2708, 1433)
@@ -72,21 +75,36 @@ def run_cora():
    # features.cuda()
 
     agg1 = MeanAggregator(features, cuda=True)
+    #agg1 = MaxPoolAggregator(features, 1433, cuda=False)
     enc1 = Encoder(features, 1433, 128, adj_lists, agg1, gcn=True, cuda=False)
-    agg2 = MeanAggregator(lambda nodes : enc1(nodes).t(), cuda=False)
-    enc2 = Encoder(lambda nodes : enc1(nodes).t(), enc1.embed_dim, 128, adj_lists, agg2,
+    
+    agg2 = MeanAggregator(lambda nodes: enc1(nodes).t(), cuda=False)
+    #agg2 = MaxPoolAggregator(lambda nodes: enc1(nodes).t(), 128, cuda=False)
+    enc2 = Encoder(lambda nodes: enc1(nodes).t(), enc1.embed_dim, 128, adj_lists, agg2,
             base_model=enc1, gcn=True, cuda=False)
+    
+    if three_layer:
+        agg3 = MeanAggregator(lambda nodes: enc2(nodes).t(), cuda=False)
+        #agg3 = MaxPoolAggregator(lambda nodes: enc2(nodes).t(), 128, cuda=False)
+        enc3 = Encoder(lambda nodes: enc2(nodes).t(), enc2.embed_dim, 128, adj_lists, agg3,
+                base_model=enc1, gcn=True, cuda=False) # not exactly sure what base_model does, but it's not referenced anywhere
+        enc3.num_samples = 5
+    
     enc1.num_samples = 5
     enc2.num_samples = 5
-
-    graphsage = SupervisedGraphSage(7, enc2)
+    
+    if three_layer:
+        graphsage = SupervisedGraphSage(7, enc3)
+    else:
+        graphsage = SupervisedGraphSage(7, enc2)
 #    graphsage.cuda()
     rand_indices = np.random.permutation(num_nodes)
     test = rand_indices[:1000]
     val = rand_indices[1000:1500]
     train = list(rand_indices[1500:])
 
-    optimizer = torch.optim.SGD(filter(lambda p : p.requires_grad, graphsage.parameters()), lr=0.7)
+    optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, graphsage.parameters()), lr=0.7)
+    #optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, graphsage.parameters()), lr=0.01)
     times = []
     for batch in range(100):
         batch_nodes = train[:256]
@@ -106,4 +124,7 @@ def run_cora():
     print("Average batch time:", np.mean(times))
 
 if __name__ == "__main__":
-    run_cora()
+    if len(sys.argv) == 2 and sys.argv[1] == '3':
+        run_cora(three_layer=True)
+    else:
+        run_cora()
